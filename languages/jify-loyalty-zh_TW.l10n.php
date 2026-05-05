@@ -1,0 +1,20 @@
+<?php
+return [
+    'Jify Loyalty Settings' => 'Jify Loyalty 設定',
+    'Loyalty Points' => '會員點數',
+    'Points Balance' => '點數餘額',
+    'Points History' => '點數紀錄',
+    'Earn Points' => '集點',
+    'Redeem Points' => '折抵點數',
+    'Conversion Rate' => '集點匯率',
+    'Redemption Rules' => '兌換規則',
+    'LINE Login Settings' => 'LINE 登入設定',
+    'Channel ID' => 'Channel ID',
+    'Channel Secret' => 'Channel Secret',
+    'Bind LINE Account' => '綁定 LINE 帳號',
+    'Adjust User Points' => '調整用戶點數',
+    'Reason' => '原因',
+    'Save Changes' => '儲存變更',
+    'Points adjusted successfully.' => '點數調整成功。',
+    'Insufficient points.' => '點數不足。',
+];
