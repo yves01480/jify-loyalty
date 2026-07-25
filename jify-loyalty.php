@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Jify Loyalty (集點卡系統)
  * Description: 整合 WooCommerce 訂單自動集點與 LINE 帳號綁定系統 (真實串接版 + 規則引擎)。
- * Version: 0.5.1
+ * Version: 0.6.0
  * Author: Jify Dev Team
  * Text Domain: jify-loyalty
  */
@@ -29,6 +29,7 @@ class Jify_Loyalty {
         register_activation_hook(__FILE__, array($this, 'install_db'));
         add_action('woocommerce_order_status_completed', array($this, 'award_points_on_order_complete'));
         add_action('init', array($this, 'add_my_account_endpoint'));
+        add_action('init', array($this, 'maybe_clear_expired_points'));
         add_filter('query_vars', array($this, 'add_query_vars'), 0);
         add_filter('woocommerce_account_menu_items', array($this, 'add_my_account_menu_item'));
         add_action('woocommerce_account_jify-points_endpoint', array($this, 'render_my_account_points_page'));
@@ -391,6 +392,7 @@ class Jify_Loyalty {
         register_setting('jify_loyalty_options', 'jify_loyalty_earning_cap'); // Max points per order
         register_setting('jify_loyalty_options', 'jify_loyalty_earning_fixed_threshold'); // Spend X
         register_setting('jify_loyalty_options', 'jify_loyalty_earning_fixed_amount'); // Get Y
+        register_setting('jify_loyalty_options', 'jify_loyalty_earning_expiry_date'); // 贈點截止日 (Y-m-d)，空字串=永不過期
 
         // Redemption Settings
         register_setting('jify_loyalty_options', 'jify_loyalty_redemption_rate'); 
@@ -517,6 +519,31 @@ class Jify_Loyalty {
                         }
                     }
                     </script>
+
+                    <hr>
+                    <h3>贈點到期日</h3>
+                    <table class="form-table">
+                        <tr valign="top">
+                            <th scope="row">贈點截止日</th>
+                            <td>
+                                <input type="date" name="jify_loyalty_earning_expiry_date" value="<?php echo esc_attr($this->get_earning_expiry_date()); ?>" />
+                                <p class="description">
+                                    留空 = 永不過期。<br>
+                                    設定後，<b>過了此日期的隔天起，新訂單將不再贈點</b>。<br>
+                                    <?php
+                                    $clear_date = $this->get_clear_date();
+                                    if ($clear_date) {
+                                        $cleared = get_option('jify_loyalty_points_cleared_for', '');
+                                        $status = ($cleared === $clear_date) ? ' <span style="color:#c0392b; font-weight:bold;">（已執行清空）</span>' : '';
+                                        echo '預計清空日：<b>' . esc_html($clear_date) . '</b>（截止日 +6 個月），當天起所有會員點數將歸零。' . $status;
+                                    } else {
+                                        echo '清空日：未設定截止日，不會清空。';
+                                    }
+                                    ?>
+                                </p>
+                            </td>
+                        </tr>
+                    </table>
 
                     <hr>
                     <h3>適用商品範圍</h3>
@@ -726,6 +753,71 @@ class Jify_Loyalty {
         flush_rewrite_rules();
     }
 
+    /**
+     * 取得贈點截止日（Y-m-d），未設定回傳空字串。
+     */
+    public function get_earning_expiry_date() {
+        $date = trim((string) get_option('jify_loyalty_earning_expiry_date', ''));
+        if ($date === '') return '';
+        // 格式檢查
+        $ts = strtotime($date);
+        return $ts ? date('Y-m-d', $ts) : '';
+    }
+
+    /**
+     * 取得清空日（截止日 + 6 個月），未設定截止日則回傳空字串。
+     */
+    public function get_clear_date() {
+        $expiry = $this->get_earning_expiry_date();
+        if ($expiry === '') return '';
+        return date('Y-m-d', strtotime($expiry . ' +6 months'));
+    }
+
+    /**
+     * 是否已過贈點截止日（含當日仍可贈點，隔天開始停發）。
+     */
+    public function is_earning_expired() {
+        $expiry = $this->get_earning_expiry_date();
+        if ($expiry === '') return false;
+        return current_time('Y-m-d') > $expiry;
+    }
+
+    /**
+     * 到達清空日後，將所有會員點數歸零（只執行一次）。
+     */
+    public function maybe_clear_expired_points() {
+        $clear_date = $this->get_clear_date();
+        if ($clear_date === '') return;
+        if (current_time('Y-m-d') < $clear_date) return;
+
+        $cleared_marker = get_option('jify_loyalty_points_cleared_for', '');
+        if ($cleared_marker === $clear_date) return; // 已經針對此清空日執行過
+
+        global $wpdb;
+        // 取出所有有點數的會員
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT user_id, meta_value FROM {$wpdb->usermeta} WHERE meta_key = %s AND meta_value <> '0' AND meta_value <> ''",
+            'jify_point_balance'
+        ));
+
+        $table_name = $wpdb->prefix . 'jify_loyalty_logs';
+        foreach ($rows as $row) {
+            $uid = intval($row->user_id);
+            $bal = intval($row->meta_value);
+            if ($bal === 0) continue;
+            update_user_meta($uid, 'jify_point_balance', 0);
+            $wpdb->insert($table_name, array(
+                'user_id'      => $uid,
+                'points'       => -$bal,
+                'description'  => '點數到期清空 (清空日 ' . $clear_date . ')',
+                'reference_id' => 'clear_' . $clear_date,
+                'created_at'   => current_time('mysql'),
+            ));
+        }
+
+        update_option('jify_loyalty_points_cleared_for', $clear_date);
+    }
+
     public function get_user_points($user_id) {
         $points = get_user_meta($user_id, 'jify_point_balance', true);
         return $points ? intval($points) : 0;
@@ -765,6 +857,12 @@ class Jify_Loyalty {
             }
         }
         if (!$user_id) return;
+
+        // 贈點截止日檢查：過了截止日就不再贈點
+        if ($this->is_earning_expired()) {
+            $order->add_order_note('Jify Loyalty: 已過贈點截止日，本筆訂單不發放點數。');
+            return;
+        }
 
         global $wpdb;
         $table_name = $wpdb->prefix . 'jify_loyalty_logs';
@@ -827,6 +925,8 @@ class Jify_Loyalty {
     public function display_earned_points_on_thankyou($order_id) {
         $order = wc_get_order($order_id);
         if (!$order) return;
+
+        if ($this->is_earning_expired()) return;
 
         $points = $this->calculate_order_points($order);
         if ($points <= 0) return;
